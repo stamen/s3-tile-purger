@@ -1,0 +1,21 @@
+{
+  "name": "s3-tile-purger",
+  "description": "Purges map tiles from S3 buckets",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stamen/s3-tile-purger.git"
+  },
+  "bin": "./bin/s3-tile-purger.js",
+  "author": "Seth Fitzsimmons <seth@mojodna.net>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/stamen/s3-tile-purger/issues"
+  },
+  "dependencies": {
+    "async": "~0.2.9",
+    "require-env": "0.0.3",
+    "knox": "~0.8.6",
+    "optimist": "~0.6.0"
+  }
+}
