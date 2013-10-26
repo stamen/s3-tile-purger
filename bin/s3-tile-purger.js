@@ -21,8 +21,8 @@ var argv = optimist
   .describe("a", "Delete items older than this (seconds).")
   .argv;
 
-var minZoom = argv.z || 0,
-    maxZoom = argv.Z || 22,
+var minZoom = argv.z === undefined ? 0 : argv.z,
+    maxZoom = argv.Z === undefined ? 22 : argv.Z,
     style = argv.style;
 
 // remove a leading slash if necessary
