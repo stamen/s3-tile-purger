@@ -27,6 +27,15 @@ module.exports = function(options, callback) {
     console.log("Deleted %d/%d keys from '%s'.", deletedKeyCount, seenKeyCount, options.prefix);
   }, 10000).unref();
 
+  var deleteQueue = async.queue(function(task, done) {
+    return client.deleteMultiple(task.keys, function(err) {
+      process.stdout.write(".");
+      deletedKeyCount += task.keys.length;
+
+      return done(err);
+    });
+  }, 20);
+
   return async.doWhilst(
     function(next) {
       return client.list({
@@ -59,24 +68,36 @@ module.exports = function(options, callback) {
         count = keys.length;
         marker = data.Marker;
 
-        return client.deleteMultiple(keys, function(err) {
-          process.stdout.write(".");
-          deletedKeyCount += keys.length;
+        if (keys.length > 0) {
+          deleteQueue.push({ keys: keys });
+        }
 
-          return next(err);
-        });
+        return next();
       });
     },
     function() { return count > 0; },
     function(err) {
-      clearInterval(interval);
-
       if (err) {
         console.error(err);
       }
 
-      console.log();
-      console.log("Deleted %d/%d keys from '%s'.", deletedKeyCount, seenKeyCount, options.prefix);
-      return callback(null, deletedKeyCount);
+      var done = function() {
+        clearInterval(interval);
+
+        console.log();
+        console.log("Deleted %d/%d keys from '%s'.", deletedKeyCount, seenKeyCount, options.prefix);
+        return callback.apply(null, arguments);
+      };
+
+      if (deleteQueue.length() === 0 &&
+          deleteQueue.running() === 0) {
+        return done(null, deletedKeyCount);
+      }
+
+      // at this point, potentially many deletions have been queued up, so we
+      // can wait for the queue to announce that it has drained and return
+      deleteQueue.drain = function() {
+        return done(null, deletedKeyCount);
+      };
     });
 };
