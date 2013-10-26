@@ -1,7 +1,7 @@
 {
   "name": "s3-tile-purger",
   "description": "Purges map tiles from S3 buckets",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/stamen/s3-tile-purger.git"
