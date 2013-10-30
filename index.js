@@ -3,14 +3,16 @@
 var path = require("path");
 
 var async = require("async"),
-    knox = require("knox"),
+    AWS = require("aws-sdk"),
     env = require("require-env");
 
-var client = knox.createClient({
-  key: env.require("AWS_ACCESS_KEY_ID"),
-  secret: env.require("AWS_SECRET_ACCESS_KEY"),
-  bucket: env.require("S3_BUCKET")
+AWS.config.update({
+  region: process.env.AWS_DEFAULT_REGION || "us-east-1"
 });
+
+var S3_BUCKET = env.require("S3_BUCKET");
+
+var client = new AWS.S3();
 
 module.exports = function(options, callback) {
   if (options.extension &&
@@ -21,6 +23,7 @@ module.exports = function(options, callback) {
   var count,
       deletedKeyCount = 0,
       seenKeyCount = 0,
+      truncated,
       marker;
 
   var interval = setInterval(function() {
@@ -28,7 +31,19 @@ module.exports = function(options, callback) {
   }, 10000).unref();
 
   var deleteQueue = async.queue(function(task, done) {
-    return client.deleteMultiple(task.keys, function(err) {
+    var objects = task.keys.map(function(k) {
+      return {
+        Key: k
+      };
+    });
+
+    return client.deleteObjects({
+      Bucket: S3_BUCKET,
+      Delete: {
+        Objects: objects,
+        Quiet: true
+      }
+    }, function(err) {
       process.stdout.write(".");
       deletedKeyCount += task.keys.length;
 
@@ -38,9 +53,10 @@ module.exports = function(options, callback) {
 
   return async.doWhilst(
     function(next) {
-      return client.list({
-        marker: marker || "",
-        prefix: options.prefix
+      return client.listObjects({
+        Bucket: S3_BUCKET,
+        Marker: marker || "",
+        Prefix: options.prefix
       }, function(err, data) {
         if (err) {
           return next(err);
@@ -48,6 +64,11 @@ module.exports = function(options, callback) {
 
         seenKeyCount += data.Contents.length;
         count = data.Contents.length;
+        truncated = data.IsTruncated;
+
+        if (data.IsTruncated) {
+          marker = data.Contents[data.Contents.length - 1].Key;
+        }
 
         var keys = data.Contents
           .filter(function(x) {
@@ -66,8 +87,6 @@ module.exports = function(options, callback) {
             return x.Key;
           });
 
-        marker = data.Marker;
-
         if (keys.length > 0) {
           deleteQueue.push({ keys: keys });
         }
@@ -75,7 +94,7 @@ module.exports = function(options, callback) {
         return next();
       });
     },
-    function() { return count > 0; },
+    function() { return truncated && count > 0; },
     function(err) {
       if (err) {
         console.error(err);
