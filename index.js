@@ -47,6 +47,7 @@ module.exports = function(options, callback) {
         }
 
         seenKeyCount += data.Contents.length;
+        count = data.Contents.length;
 
         var keys = data.Contents
           .filter(function(x) {
@@ -65,7 +66,6 @@ module.exports = function(options, callback) {
             return x.Key;
           });
 
-        count = keys.length;
         marker = data.Marker;
 
         if (keys.length > 0) {
