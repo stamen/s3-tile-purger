@@ -69,7 +69,6 @@ module.exports = function(options, callback) {
           });
 
           seenKeyCount += data.Contents.length;
-          seenKeyCount += data.CommonPrefixes.length;
 
           truncated = data.IsTruncated;
 
