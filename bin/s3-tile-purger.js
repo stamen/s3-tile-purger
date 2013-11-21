@@ -2,7 +2,10 @@
 
 "use strict";
 
+var util = require("util");
+
 var async = require("async"),
+    multimeter = require("multimeter"),
     optimist = require("optimist");
 
 var purge = require("../");
@@ -30,27 +33,61 @@ if (style && style.indexOf("/") === 0) {
   style = style.slice(1);
 }
 
-var zoomLevels = [];
+var multi = multimeter(process),
+    zoomLevels = [];
 
 for (var z = minZoom; z <= maxZoom; z++) {
   zoomLevels.push(z);
 }
 
-async.each(zoomLevels, function(z, callback) {
-  var prefix = [style, z].filter(function(x) {
-    return x !== undefined;
-  }).join("/") + "/";
+multi.write("Purge Status\n");
 
-  console.log("Purging '%s'...", prefix);
-
-  return purge({
-    prefix: prefix,
+if (style === "*") {
+  var purger = purge({
     extension: argv.extension,
-    minAge: argv.a
-  }, callback);
-}, function(err) {
-  if (err) {
-    throw err;
-  }
-});
+    minAge: argv.a,
+    depth: 1 // loop through a zoom at a time
+  }, function() {
+    multi.destroy();
+  });
 
+  multi.write(style + "\n");
+
+  var bar = multi.rel(3, 0, {
+    width: 60
+  });
+
+  purger.on("status", function(status) {
+    bar.ratio(status.deleted, status.keys || 1, util.format("%d / %d / %d", status.deleted, status.keys, status.prefixes));
+  });
+} else {
+  var offset = 0;
+
+  async.each(zoomLevels, function(z, callback) {
+    var prefix = [style, z].filter(function(x) {
+      return x !== undefined;
+    }).join("/") + "/";
+
+    var purger = purge({
+      prefix: prefix,
+      extension: argv.extension,
+      minAge: argv.a
+    }, callback);
+
+    multi.write(prefix.slice(0, -1) + "\n");
+
+    var bar = multi.rel((style || "").length + 5, zoomLevels.length - offset++, {
+      width: 60
+    });
+
+    purger.on("status", function(status) {
+      bar.ratio(status.deleted, status.keys || 1, util.format("%d / %d / %d", status.deleted, status.keys, status.prefixes));
+    });
+  }, function(err) {
+    if (err) {
+      throw err;
+    }
+
+    multi.destroy();
+  });
+}

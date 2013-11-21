@@ -1,6 +1,8 @@
 "use strict";
 
-var path = require("path");
+var events = require("events"),
+    http = require("http"),
+    path = require("path");
 
 var async = require("async"),
     AWS = require("aws-sdk"),
@@ -9,6 +11,8 @@ var async = require("async"),
 AWS.config.update({
   region: process.env.AWS_DEFAULT_REGION || "us-east-1"
 });
+
+http.globalAgent.maxSockets = 200;
 
 var S3_BUCKET = env.require("S3_BUCKET");
 
@@ -20,15 +24,12 @@ module.exports = function(options, callback) {
     options.extension = "." + options.extension;
   }
 
-  var count,
-      deletedKeyCount = 0,
-      seenKeyCount = 0,
-      truncated,
-      marker;
+  options.depth = "depth" in options ? options.depth : Infinity;
 
-  var interval = setInterval(function() {
-    console.log("Deleted %d/%d keys from '%s'.", deletedKeyCount, seenKeyCount, options.prefix);
-  }, 10000).unref();
+  var deletedKeyCount = 0,
+      seenKeyCount = 0,
+      seenPrefixCount = 0,
+      emitter = new events.EventEmitter();
 
   var deleteQueue = async.queue(function(task, done) {
     if (task.objects.length === 0) {
@@ -42,99 +43,109 @@ module.exports = function(options, callback) {
         Quiet: true
       }
     }, function(err) {
-      process.stdout.write(".");
+      if (err) {
+        console.error(err.stack);
+        return done(err);
+      }
+
       deletedKeyCount += task.objects.length;
 
-      return done(err);
+      emitter.emit("status", {
+        deleted: deletedKeyCount,
+        keys: seenKeyCount,
+        prefixes: seenPrefixCount
+      });
+
+      return done();
     });
-  }, 20);
+  }, 100);
 
   var listQueue = async.queue(function(task, done) {
-    var marker,
-        truncated;
+    return client.listObjects(task, function(err, data) {
+      if (err) {
+        console.error(err.stack);
+        return done(err);
+      }
 
-    return async.doWhilst(
-      function(next) {
-        task.Marker = marker || "";
+      // drop into "subdirectories"
+      data.CommonPrefixes.forEach(function(x) {
+        x.Bucket = S3_BUCKET;
+        if (x.Prefix.match(/\//g).length <= options.depth) {
+          x.Delimiter = task.Delimiter;
+        }
+        listQueue.push(x);
+      });
 
-        return client.listObjects(task, function(err, data) {
-          if (err) {
-            return next(err);
-          }
+      seenKeyCount += data.Contents.length;
+      seenPrefixCount += data.CommonPrefixes.length;
 
-          // drop into "subdirectories"
-          data.CommonPrefixes.forEach(function(x) {
-            x.Bucket = S3_BUCKET;
-            listQueue.push(x);
-          });
+      emitter.emit("status", {
+        deleted: deletedKeyCount,
+        keys: seenKeyCount,
+        prefixes: seenPrefixCount
+      });
 
-          seenKeyCount += data.Contents.length;
+      if (data.IsTruncated) {
+        // lexicographically "last" key
+        var marker = [
+          data.Contents.slice(-1).pop(),
+          data.CommonPrefixes.slice(-1).pop()
+        ].filter(function(x) {
+          return x !== undefined;
+        }).map(function(x) {
+          return x.Key || x.Prefix;
+        }).sort().slice(-1).pop();
 
-          truncated = data.IsTruncated;
+        task.Marker = marker;
 
-          if (truncated) {
-            // lexicographically "last" key
-            marker = [
-              data.Contents.slice(-1).Key,
-              data.CommonPrefixes.slice(-1).Key
-            ].sort().slice(-1);
-          }
+        listQueue.push(task);
+      }
 
-          var objects = data.Contents
-            .filter(function(x) {
-              // only match the provided extension
-              return !options.extension ||
-                    options.extension === path.extname(x.Key);
-            })
-            .filter(function(x) {
-              // only match objects older than minAge
-              var age = ~~(Date.now() / 1000 - x.LastModified.getTime() / 1000);
+      var objects = data.Contents
+        .filter(function(x) {
+          // only match the provided extension
+          return !options.extension ||
+                options.extension === path.extname(x.Key);
+        })
+        .filter(function(x) {
+          // only match objects older than minAge
+          var age = ~~(Date.now() / 1000 - x.LastModified.getTime() / 1000);
 
-              return !options.minAge ||
-                    age > options.minAge;
-            })
-            .map(function(x) {
-              return {
-                Key: x.Key
-              };
-            });
-
-          deleteQueue.push({
-            objects: objects
-          });
-
-          return next();
+          return !options.minAge ||
+                age > options.minAge;
+        })
+        .map(function(x) {
+          return {
+            Key: x.Key
+          };
         });
-      },
-      function() {
-        return truncated;
-      }, done);
-  }, 20);
+
+      deleteQueue.push({
+        objects: objects
+      });
+
+      return done();
+    });
+  }, 100);
 
   listQueue.push({
     Bucket: S3_BUCKET,
-    Prefix: options.prefix,
+    Prefix: options.prefix || "",
     Delimiter: "/"
   });
 
   listQueue.drain = function() {
-    var done = function() {
-      clearInterval(interval);
-
-      console.log();
-      console.log("Deleted %d/%d keys from '%s'.", deletedKeyCount, seenKeyCount, options.prefix);
-      return callback.apply(null, arguments);
-    };
-
     if (deleteQueue.length() === 0 &&
         deleteQueue.running() === 0) {
-      return done(null, deletedKeyCount);
+      return callback(null, deletedKeyCount);
     }
 
     // at this point, potentially many deletions have been queued up, so we
     // can wait for the queue to announce that it has drained and return
     deleteQueue.drain = function() {
-      return done(null, deletedKeyCount);
+      return callback(null, deletedKeyCount);
     };
   };
+
+  return emitter;
 };
