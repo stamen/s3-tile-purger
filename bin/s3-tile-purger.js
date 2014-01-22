@@ -1,93 +1,37 @@
 #!/usr/bin/env node
-
 "use strict";
 
-var util = require("util");
+var commander = require("commander");
 
-var async = require("async"),
-    multimeter = require("multimeter"),
-    optimist = require("optimist");
+// suppress EPIPE errors
+process.stdout.on("error", function(err) {
+  if (err.code === "EPIPE") {
+    process.exit();
+  }
 
-var purge = require("../");
+  throw err;
+});
 
-var argv = optimist
-  .usage("Usage: $0 [-s <style>] [-e <extension>] [-z <min zoom>] [-Z <max zoom] [-a <min age>]")
-  .alias("s", "style")
-  .describe("s", "Style name.")
-  .alias("e", "extension")
-  .describe("e", "File extension.")
-  .alias("z", "min-zoom")
-  .describe("z", "Min zoom (inclusive). Defaults to 0.")
-  .alias("Z", "max-zoom")
-  .describe("Z", "Max zoom (inclusive). Defaults to 22.")
-  .alias("a", "min-age")
-  .describe("a", "Delete items older than this (seconds).")
-  .argv;
+// general exception handler (allows all commands to throw errors)
+process.on("uncaughtException", function(err) {
+  console.error(err.stack);
+  process.exit(1);
+});
 
-var minZoom = argv.z === undefined ? 0 : argv.z,
-    maxZoom = argv.Z === undefined ? 22 : argv.Z,
-    style = argv.style;
+commander
+  .option("-s, --style <style>", "Style name", "")
+  .option("-e, --extension <extension>", "Extension")
+  .option("-z, --min-zoom <min zoom>", "Min zoom (inclusive). Defaults to 0.", 0)
+  .option("-Z, --max-zoom <max zoom>", "Max zoom (inclusive). Defaults to 22.", 22);
 
-// remove a leading slash if necessary
-if (style && style.indexOf("/") === 0) {
-  style = style.slice(1);
-}
+require("../lib/commands/dynamic")(commander);
+require("../lib/commands/ls")(commander);
+require("../lib/commands/meta")(commander);
+require("../lib/commands/purge")(commander);
+require("../lib/commands/update-storage-class")(commander);
 
-var multi = multimeter(process),
-    zoomLevels = [];
+commander.parse(process.argv);
 
-for (var z = minZoom; z <= maxZoom; z++) {
-  zoomLevels.push(z);
-}
-
-multi.write("Purge Status\n");
-
-if (style === "*") {
-  var purger = purge({
-    extension: argv.extension,
-    minAge: argv.a,
-    depth: 1 // loop through a zoom at a time
-  }, function() {
-    multi.destroy();
-  });
-
-  multi.write(style + "\n");
-
-  var bar = multi.rel(3, 0, {
-    width: 60
-  });
-
-  purger.on("status", function(status) {
-    bar.ratio(status.deleted, status.keys || 1, util.format("%d / %d / %d", status.deleted, status.keys, status.prefixes));
-  });
-} else {
-  var offset = 0;
-
-  async.each(zoomLevels, function(z, callback) {
-    var prefix = [style, z].filter(function(x) {
-      return x !== undefined;
-    }).join("/") + "/";
-
-    var purger = purge({
-      prefix: prefix,
-      extension: argv.extension,
-      minAge: argv.a
-    }, callback);
-
-    multi.write(prefix.slice(0, -1) + "\n");
-
-    var bar = multi.rel((style || "").length + 5, zoomLevels.length - offset++, {
-      width: 60
-    });
-
-    purger.on("status", function(status) {
-      bar.ratio(status.deleted, status.keys || 1, util.format("%d / %d / %d", status.deleted, status.keys, status.prefixes));
-    });
-  }, function(err) {
-    if (err) {
-      throw err;
-    }
-
-    multi.destroy();
-  });
+if (commander.args.length === 0) {
+  commander.help();
 }
